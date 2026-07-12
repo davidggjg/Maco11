@@ -1,66 +1,38 @@
 import httpx
-import logging
+import time
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 
-# הגדרות לוגים
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("stream-manager")
+app = FastAPI(title="Maco Stream Proxy")
 
-app = FastAPI(title="Maco Stream Manager")
+# 1. הגדרת ה-Origin שלך (שנה לכתובת האתר האמיתית שלך)
+ALLOWED_ORIGIN = "https://your-username.github.io" 
 
-# דשבורד פשוט
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    return """
-    <html>
-        <head><title>Maco Manager</title></head>
-        <body>
-            <h1>מרכז הניהול של מאקו</h1>
-            <input type="text" id="vid" value="VOD-6540b8dcb64fd31006" placeholder="הכנס ID סרטון">
-            <button onclick="fetchStream()">הפעל</button>
-            <div id="result"></div>
-            <script>
-                async function fetchStream() {
-                    const id = document.getElementById('vid').value;
-                    document.getElementById('result').innerText = "מטען נתונים...";
-                    const res = await fetch('/api/vod/' + id);
-                    const data = await res.json();
-                    if(data.url) {
-                        document.getElementById('result').innerHTML = `<a href="${data.url}" target="_blank">לחץ כאן לצפייה</a>`;
-                    } else {
-                        document.getElementById('result').innerText = "שגיאה: " + JSON.stringify(data);
-                    }
-                }
-            </script>
-        </body>
-    </html>
-    """
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[ALLOWED_ORIGIN],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.get("/api/vod/{video_id}")
-async def get_vod_stream(video_id: str):
-    try:
-        # כאן אנחנו מריצים את הלוגיקה המשולבת
-        final_url = await _fetch_vod_and_validate(video_id)
-        return {"type": "vod", "video_id": video_id, "status": "ready", "url": final_url}
-    except Exception as e:
-        logger.error(f"Error fetching {video_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# ניהול סשן גלובלי
+session_cache = {"client": None, "expires_at": 0}
 
-async def _fetch_vod_and_validate(video_id: str) -> str:
-    # 1. הכתובת של ה-"לחיצת יד" (ה-POST)
-    analytics_url = "https://www.mako.co.il/c99a4269-161c-4242-a3f0-28d44fa6ce24"
+async def get_valid_client():
+    # בדיקת תוקף סשן (שעה אחת = 3600 שניות)
+    if session_cache["client"] and time.time() < session_cache["expires_at"]:
+        return session_cache["client"]
     
-    # 2. הקישור הסופי (מה-cURL השני)
-    stream_url = "https://d2249b6f08tjt0.cloudfront.net/k12dvr/eyJhbGciOiJIUzI1NiJ9.eyJwYXRoIjoiXC9rMTJkdnJcL21hc3Rlci5tM3U4P2ItaW4tcmFuZ2U9MC0xODAwIiwidGltZXN0YW1wIjoxNzgzODQ5ODA4MTcyfQ.m1RdU6VIMwe37bEZior8obbJMEB5DbryzJa1Hld1lhE/playlist_0.m3u8?_uid=16bf0751-776e-4ee5-81e2-974b42b2faf0&rK=b7&_did=18eba19b-0434-b40a-8b33-a4f865d29376"
-
-    # הנתונים שהעתקת מה-cURL (ה-Payload)
+    # יצירת סשן חדש
+    client = httpx.AsyncClient(follow_redirects=True)
+    
+    # ה-Payload שהעתקנו מה-Network
     payload = {
         "cid": "cj2l",
         "uzl": "T6MEtpzY7tq9YQZncEHIpZmZCux9efajlzTdUcHjiyg=",
         "et": "85",
-        "url": f"https://www.mako.co.il/click/mako-vod-live-tv/{video_id}.htm",
+        "url": "https://www.mako.co.il/click/mako-vod-live-tv/VOD-6540b8dcb64fd31006.htm",
         "JSinfo": '{"j301":{"k1":169,"k2":188,"k3":"playIcon","k4":0,"k5":0,"k6":0,"k7":0},"j289":"7705c65e-d6ba-4e7f-bbe4-9f8757a66b80","j290":"MTlmYTQ4Y2UtY2oyai00MDBiLWFjNzAtYTdjMjg0NTIzMDZkJDE4OC42NC4yMDcuMTA1"}',
         "js_zpsbd3": "https://www.google.com/",
         "jsbd2": "96cc65e7-cj2l-e436-16a5-10a7377c643d",
@@ -77,20 +49,31 @@ async def _fetch_vod_and_validate(video_id: str) -> str:
     }
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Android 16; Mobile; rv:144.0) Gecko/144.0 Firefox/144.0",
-        "Referer": f"https://www.mako.co.il/mako-vod-live-tv/{video_id}.htm",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
     }
 
-    # משתמשים ב-Client אחד בשביל לשמור את ה-Session (Cookies)
-    async with httpx.AsyncClient() as client:
-        # א. מבצעים את ה-POST הראשון
-        await client.post(analytics_url, data=payload, headers=headers)
-        
-        # ב. מבצעים את ה-GET השני (הסשן נשמר)
-        resp = await client.get(stream_url, headers=headers)
+    # "לחיצת היד"
+    await client.post("https://www.mako.co.il/c99a4269-161c-4242-a3f0-28d44fa6ce24", data=payload, headers=headers)
+    
+    session_cache["client"] = client
+    session_cache["expires_at"] = time.time() + 3600
+    return client
+
+@app.get("/api/refresh-stream")
+async def refresh_stream():
+    try:
+        client = await get_valid_client()
+        # הכתובת של הסטרים
+        stream_url = "https://d2249b6f08tjt0.cloudfront.net/k12dvr/master.m3u8"
+        resp = await client.get(stream_url)
         
         if resp.status_code == 200:
-            return stream_url
+            return {"url": str(resp.url)}
         else:
-            raise Exception(f"השרת של מאקו חסם אותנו עם סטטוס {resp.status_code}")
+            # אם נכשל, ננקה את הסשן כדי שינסה שוב מאפס בבקשה הבאה
+            session_cache["expires_at"] = 0
+            raise HTTPException(status_code=500, detail="Failed to fetch stream")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
